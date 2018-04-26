@@ -30,14 +30,15 @@ lable_to_vector = [
 [0.,0.,0.,0.,0.,0.,0.,0.,1.,0.],
 [0.,0.,0.,0.,0.,0.,0.,0.,0.,1.]]
 
-width      = 640#摄像头尺寸
-hight      = 480
-status     = 0#进程状态
-num_labels = []#预测的结果
+width       = 640#摄像头尺寸
+hight       = 480
+status      = 0#进程状态,默认0 ideal,-1 退出，3 保存feature，并重新
+num_labels  = []#预测的结果
+input_label = -127#输入采集label，默认为-127
 timg       = np.zeros((hight, width), np.uint8)#用于跟踪笔迹调试窗口
 org_img    = np.zeros((hight, width), np.uint8)#摄像头原始窗口
 mnist_img  = np.zeros((256, 256))#用于显示处理后的笔迹窗口,也是进行识别图像的扩大版
-
+cv2.putText(mnist_img, "WestWell", (0, 64), cv2.FONT_HERSHEY_DUPLEX, 1.8, (255,255,255), 3, 3)#起始界面logo
 #获取笔迹的数据和label
 def get_trace_data(data_path):
     data_out  = []
@@ -63,7 +64,7 @@ def get_trace_data(data_path):
     label_out_mtx = label_out_mtx[shuffle_idx,:]
 
     return data_out_mtx, label_out_mtx
-'''
+
 #获取mnist的数据和label
 def get_mnist_data(num):
     data_out  = []
@@ -75,18 +76,16 @@ def get_mnist_data(num):
         label_out.append(lable_to_vector[int(label)])
     data_out_mtx  = np.vstack(data_out)
     label_out_mtx = np.vstack(label_out)
-    np.random.seed(701507)#伪随机
+    np.random.seed(701507)#随机种子，大质数
     shuffle_idx = np.random.permutation(num)
     np.random.shuffle(shuffle_idx)    
     data_out_mtx  = data_out_mtx[shuffle_idx,:]
     label_out_mtx = label_out_mtx[shuffle_idx,:]
 
     return data_out_mtx, label_out_mtx
-'''
 
-sarry_img = 0
 def pic_mnist(arry_img):
-    global sarry_img, mnist_img
+    global mnist_img
     kernel=np.uint8(np.zeros((5,5)))#膨胀的内核为5x5的十字
     for x in range(5):
         kernel[x,2]=1
@@ -136,9 +135,7 @@ def pic_mnist(arry_img):
     mnist = mnist.astype(np.uint8)
     retval, mnist = cv2.threshold(mnist, 1, 255, cv2.THRESH_BINARY)
     mnist = mnist.astype(np.uint8)
-    name = "./mnist" +"_"+ str(sarry_img)+".npy"
     #np.save(name, mnist)#采集数据
-    sarry_img = sarry_img + 1
     mnist_img = cv2.resize(pad_img, (256, 256), interpolation=cv2.INTER_AREA)
     return mnist
     
@@ -151,7 +148,7 @@ h_size      = 0x7ff#0x800 * 8 = 16K
 dp.INIT()
 dp.WD_EN(1)
 clear_M_en = 1
-'''   
+'''
 #先使用deepwell 训练和测试一遍mnist
 datas, labels = get_mnist_data(10000)
 org_labels    = [x.argmax() for x in labels]
@@ -173,11 +170,13 @@ cmp_ar  = torg_ar - res_ar
 acc =  float(np.sum(cmp_ar==0))/len(torg_ar)
 print acc
 '''
+
 #再用deepwell训练和测试一遍本项目采集笔迹图(越靠后训练图，权重越大)
-t_datas, t_labels = get_trace_data("./data/")
+t_datas, t_labels = get_trace_data("./tdata/")
+#'''
 t_org_labels      = [x.argmax() for x in t_labels]
 t_org_ar          = np.array(t_org_labels)
-clear_M_en        = 0
+clear_M_en        = 1
 s = time.time()
 dp.Train(t_datas, t_labels, l_scale, d_scale, y_scale, h_size, clear_M_en)
 e = time.time()
@@ -192,10 +191,16 @@ res_ar = np.array(res_labels)
 cmp_ar  = t_org_ar - res_ar
 acc =  float(np.sum(cmp_ar==0))/len(t_org_ar)
 print acc
-
+dp.save_weights(0,"./base_weight")#验证读写weight
+dp.load_weights(0,"./base_weight")
+#'''
+#dp.load_weights(0, "./current_weight")
 #跟踪笔迹和识别的主线程
 def detect_dpw():
     global status, org_img, timg, mnist_img, num_labels, width, hight
+    global input_label, t_datas, t_labels
+    mnist_feature = np.zeros((28, 28), np.uint8)#用来训练和识别的feature图
+    mnist_feature = mnist_feature.reshape((1, -1))#feature转为一维向量
     trace_status = 0
     hit_contours = []
     h=346#采集区域尺寸
@@ -205,11 +210,36 @@ def detect_dpw():
     while True:
         if status == -1:#退出
             return
+        if status == 3:#处于采集数据阶段不进行跟踪
+            if input_label != -127:#input_label采集成功并且处于采集状态，那么把采集好的数据进行训练
+                ar  = np.array(lable_to_vector[input_label])
+                ar  = ar.reshape((1, -1))
+                t_datas  = np.row_stack((t_datas, mnist_feature))
+                t_labels = np.row_stack((t_labels, ar))
+                #'''
+                np.random.seed(701507)
+                shuffle_idx = np.random.permutation(t_datas.shape[0])
+                np.random.shuffle(shuffle_idx)
+                t_datas  = t_datas[shuffle_idx,:]
+                t_labels = t_labels[shuffle_idx,:]
+                #'''
+                dp.Train(t_datas, t_labels, l_scale, d_scale, y_scale, h_size, 0)
+                dp.wait_for_idle(0)
+                pre_label = dp.Test(mnist_feature, l_scale, d_scale, y_scale, h_size)
+                print pre_label
+                if pre_label[0] == input_label:#如果学习到此次采集的数据,保存weight退出采集,更新显示的label，否则一直循环学习同一个数据
+                    print "learn success"
+                    dp.save_weights(0, "./current_weight") 
+                    input_label = -127#设置回默认
+                    status = 0
+                    num_labels = pre_label
+            continue
         ret, org_img = cap.read()
         #采框放到视频正中心位置
         x = width/2 - w/2
         y = hight/2 - h/2
         img_crop = org_img[y:y+h, x:x+w, :];
+        cv2.rectangle(org_img,(x, y),(x + w,y + h),(55,255,155),3)
         hsv = cv2.cvtColor(img_crop, cv2.COLOR_BGR2HSV)
         mask2 = cv2.inRange(hsv, np.array([2,50,50]), np.array([15,255,255]))#在hsv域上,采集皮肤颜色    
         erosion = cv2.erode(mask2, kernel_ellipse, iterations = 1) #腐蚀之后,转二值图
@@ -232,15 +262,14 @@ def detect_dpw():
         else:#没有目标发现,连续20次,认为书写结束,开始识别
            hit_contours.append((-1, -1))
            if hit_contours.count((-1, -1)) > 20:
-                mnist  = pic_mnist(timg)
-                if mnist != None:
-                    mnist_1v  = mnist.reshape((1,-1))
-                    num_labels = dp.Test(mnist_1v, l_scale, d_scale, y_scale, h_size)
+                mnist_28x28  = pic_mnist(timg)
+                if mnist_28x28 != None:
+                    mnist_feature  = mnist_28x28.reshape((1,-1))
+                    num_labels = dp.Test(mnist_feature, l_scale, d_scale, y_scale, h_size)
                     print num_labels#打印出识别结果
                 timg = np.zeros((hight, width), np.uint8)
                 hit_contours = []
                 trace_status = 0
-        cv2.rectangle(org_img,(x, y),(x + w,y + h),(55,255,155),3)
 
 #UI显示的主线程
 displayer_w = 1920#显示器尺寸
@@ -249,29 +278,60 @@ back_array  = np.zeros((displayer_h, displayer_w))#黑色
 back_img    = Image.new('RGBA', (displayer_w, displayer_h))
 back_img.paste(Image.fromarray(np.uint8(back_array)), (0,0))#初始化为黑色背景
 def show():
-    global status, org_img, timg, mnist_img, num_labels, back_img
+    global status, org_img, timg, mnist_img, num_labels, back_img, input_label
     cv2.namedWindow(".", cv2.cv.CV_WINDOW_NORMAL)
     is_fullscreen = 1
     cv2.setWindowProperty(".", 0, is_fullscreen)#只有smnist全屏
     while True:
         if status == -1:#退出
             return
-        cv2.imshow("show", org_img)#这两幅图，退出全屏，调试时候查看用
-        cv2.imshow("timg", timg)#
+        if is_fullscreen == 0:
+            cv2.imshow("show", org_img)#这两幅图，退出全屏，调试时候查看用
+            cv2.imshow("timg", timg)#
 
+        back_img.paste(Image.fromarray(np.uint8(timg)), (0, 0))#将轨迹图复制到左上角
         back_img.paste(Image.fromarray(np.uint8(mnist_img)), (int(displayer_w/2 - 128), int(displayer_h/2 - 128)))#将结果复制到中心位置   
         back_img_cv2 = cv2.cvtColor(np.asarray(back_img),cv2.COLOR_RGB2BGR)
         retval, back_img_cv2 = cv2.threshold(back_img_cv2, 1, 255, cv2.THRESH_BINARY)
         back_img_cv2 = back_img_cv2.astype(np.uint8)
 
         #将结果显示在
-        if len(num_labels) != 0:
-            cv2.putText(back_img_cv2, str(num_labels), (int(displayer_w/2 + 256), int(displayer_h/2 + 256)), cv2.FONT_HERSHEY_PLAIN, 3.0, (255,255,255), 5, 5)
+        if status == 3:
+            cv2.putText(back_img_cv2, "[Training ... %d]"%(input_label), (int(displayer_w/2 + 256), int(displayer_h/2 + 256)), cv2.FONT_HERSHEY_PLAIN, 4.5, (255,255,255), 5, 5)
+        else:
+            if len(num_labels) != 0:
+                cv2.putText(back_img_cv2, str(num_labels), (int(displayer_w/2 + 256), int(displayer_h/2 + 256)), cv2.FONT_HERSHEY_PLAIN, 5.0, (255,255,255), 5, 5)
+        
         cv2.imshow(".", back_img_cv2)
 
         key    = cv2.waitKey(1)&0xFF
         if key == ord('q'):#按键q，退出程序
             status = -1;
+        if key == ord('c'):#按键c，采集数据
+            status = 3
+        if key == ord('s'):#按键s，强行恢复正常状态
+            status = 0
+            input_label = -127
+        if key == ord('0'):
+            input_label = 0
+        if key == ord('1'):
+            input_label = 1
+        if key == ord('2'):
+            input_label = 2
+        if key == ord('3'):
+            input_label = 3
+        if key == ord('4'):
+            input_label = 4
+        if key == ord('5'):
+            input_label = 5
+        if key == ord('6'):
+            input_label = 6
+        if key == ord('7'):
+            input_label = 7
+        if key == ord('8'):
+            input_label = 8
+        if key == ord('9'):
+            input_label = 9
         if key == ord('f'):#按键f，退出/进入 全屏
             if is_fullscreen == 1:
                 cv2.setWindowProperty(".", 0, 0)#退出全屏

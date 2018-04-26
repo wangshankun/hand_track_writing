@@ -110,49 +110,57 @@ def wait_for_idle(nef_cs):
         #print "-Read core %d c_state = %d"%(nef_cs,c_state)
     #print "-out wait for idle"
 
-def Read_Weight(N_test,nef_cs): 
-    wait_for_idle(nef_cs)
-    DMA_wr_size = N_test*4
-    op_code = 0xE #dma read
-    CONF_BUS (DMA_wr_size,op_code,nef_cs)
+def load_weights(nef_cs, file_name):
+    f = open(file_name,'rb')
+    for x in range (0,20):
+        rw_size = 1024
+        rw_st_addr = 0x0
+        reg = (rw_st_addr << 11) | rw_size
+        reg_addr = 0x4
+        WR_REG(reg,reg_addr,nef_cs)
+        reg = x
+        reg_addr = 0x2
+        WR_REG(reg,reg_addr,nef_cs)
+        batch_weights = f.read(rw_size*16)
+        DMA_wr_size = rw_size*4
+        op_code = 0xF
+        CONF_BUS (DMA_wr_size,op_code,nef_cs)
+        pdll.write_cypress_16k_block(batch_weights, rw_size*16)
+    f.close()
 
+def read_weight_cyc(cyc_len, nef_cs):
     read_result = []
     rdb = []
-    buf = (ctypes.c_ubyte * (N_test*16))(*rdb)
-    count = pdll.read_cypress(buf,  N_test*16)
-    for ii in range(0, count):
-        read_result.append(buf[ii])
+    buf = (ctypes.c_ubyte * cyc_len * 16)(*rdb)
+    DMA_wr_size = cyc_len * 4
+    op_code = 0xE #dma read
+    CONF_BUS (DMA_wr_size, op_code, nef_cs)
+    count = pdll.read_cypress(buf, cyc_len * 16)
+    return buf
 
-    return read_result
-
-def read_weights(weight_128b_size,mem_sel,nef_cs):
-    wait_for_idle(nef_cs)
-#1 config rw_st_addr, rw_size
-    rw_size = weight_128b_size
-    rw_st_addr = 0x0
-    reg = (rw_st_addr << 11) | rw_size
-    reg_addr = 0x4
-    WR_REG(reg,reg_addr,nef_cs)
-#2 star Readweigt, mem_sel
-    # mem select and start write weights
-    reg = mem_sel
-    reg_addr = 0x3
-    WR_REG(reg,reg_addr,nef_cs)
-
-    if rw_size > 1024:
-        print "Readweight number is %d x128bit, which is error, can not more than 1024 !"%rw_size
-    read_result = []
-    loop_num = rw_size/32
-    if (rw_size%32 > 0) :
-        loop_num = loop_num +1
-    for i in range(loop_num):
-        if i == loop_num -1:
-            read_result = read_result + Read_Weight(int(rw_size-i*32),nef_cs)
-        else:
-            read_result = read_result + Read_Weight(int(32),nef_cs)
-
-    return read_result
-
+def save_weights(nef_cs, file_name):
+    f = open(file_name,'wb+')
+    for x in range (0,20):
+        rw_size = 1024
+        rw_st_addr = 0x0
+        reg = (rw_st_addr << 11) | rw_size
+        reg_addr = 0x4
+        WR_REG(reg,reg_addr,nef_cs)
+        reg = x
+        reg_addr = 0x3
+        WR_REG(reg,reg_addr,nef_cs)
+        loop_num = rw_size/32
+        if (rw_size%32 > 0) :
+            loop_num = loop_num +1
+        for i in range(loop_num):
+            if i == loop_num -1:
+                read_result = read_weight_cyc(int(rw_size-i*32),nef_cs)
+                f.write(read_result)
+            else:
+                read_result = read_weight_cyc(int(32),nef_cs)
+                f.write(read_result)
+    f.close()
+    
 def read_lable(N_test, nef_cs):
     read_result = []
     rdb = []
@@ -176,7 +184,7 @@ def read_vector(N_test, nef_cs):
     for ii in range(0, N_test*3*4):
         read_result.append(buf[ii])
     return read_result
-    
+
 def Train(data, label, ls, ds, ss, hs, clear_M_en, nef_cs = 0):
     global softmax_en, CMP_EN
     N_train     = data.shape[0]
